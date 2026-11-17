@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>受付 VRビュー</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #111; font-family: system-ui, sans-serif; }
+  canvas { display: block; touch-action: none; }
+  #loading {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 15px; background: #111; z-index: 5; text-align: center; line-height: 1.8; padding: 20px;
+  }
+  #help {
+    position: fixed; left: 12px; bottom: 12px; color: #fff; font-size: 12px; line-height: 1.6;
+    background: rgba(0,0,0,.45); padding: 8px 12px; border-radius: 6px; pointer-events: none;
+  }
+  #reset {
+    position: fixed; right: 12px; top: 12px; z-index: 4; border: 0; border-radius: 6px;
+    padding: 8px 12px; background: rgba(0,0,0,.5); color: #fff; font-size: 12px; cursor: pointer;
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="loading">読み込み中… <span id="pct">0%</span></div>
+<button id="reset">中心に戻る</button>
+<div id="help">ドラッグ：見回す ／ ホイール：ズーム ／ WASD・矢印：少し移動（立体感の確認）</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+const MODEL = 'reception_vr.glb';
+const EYE = 1.4;        // 撮影時のカメラ高さ (m)
+const MOVE_LIMIT = 0.8; // 中心から動ける範囲 (m)
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local'); // 頭の位置 = 撮影位置
+document.body.appendChild(renderer.domElement);
+document.body.appendChild(VRButton.createButton(renderer));
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
+const world = new THREE.Group();
+scene.add(world);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 100);
+camera.rotation.order = 'YXZ';
+camera.position.set(0, EYE, 0);
+
+// ---- モデル読み込み ----
+new GLTFLoader().load(MODEL, (gltf) => {
+  gltf.scene.traverse((o) => {
+    if (o.isMesh) {
+      const map = o.material.map;
+      if (map) map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      o.material = new THREE.MeshBasicMaterial({ map, side: THREE.DoubleSide });
+    }
+  });
+  world.add(gltf.scene);
+  document.getElementById('loading').remove();
+}, (e) => {
+  if (e.total) document.getElementById('pct').textContent = Math.round(e.loaded / e.total * 100) + '%';
+}, () => {
+  document.getElementById('loading').innerHTML =
+    'モデル（' + MODEL + '）を読み込めませんでした。<br>' +
+    'HTMLを直接ダブルクリックで開くとブラウザの制限で読み込めません。<br>' +
+    'VS Code の Live Server などのローカルサーバー、または GitHub Pages に置いて開いてください。';
+});
+
+// ---- VR: 頭の初期位置を撮影位置に合わせる ----
+renderer.xr.addEventListener('sessionstart', () => { world.position.set(0, -EYE, 0); });
+renderer.xr.addEventListener('sessionend',   () => { world.position.set(0, 0, 0); camera.position.set(0, EYE, 0); });
+
+// ---- マウス / タッチで見回し ----
+let yaw = 0, pitch = 0, dragging = false, px = 0, py = 0;
+const el = renderer.domElement;
+el.addEventListener('pointerdown', (e) => { dragging = true; px = e.clientX; py = e.clientY; el.setPointerCapture(e.pointerId); });
+el.addEventListener('pointerup',   () => { dragging = false; });
+el.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const k = 0.0035 * camera.fov / 75;
+  yaw   += (e.clientX - px) * k;
+  pitch += (e.clientY - py) * k;
+  pitch = Math.max(-1.5, Math.min(1.5, pitch));
+  px = e.clientX; py = e.clientY;
+});
+el.addEventListener('wheel', (e) => {
+  camera.fov = THREE.MathUtils.clamp(camera.fov + e.deltaY * 0.03, 35, 100);
+  camera.updateProjectionMatrix();
+}, { passive: true });
+
+// ---- キーボードで少し移動 ----
+const keys = {};
+addEventListener('keydown', (e) => { keys[e.code] = true; });
+addEventListener('keyup',   (e) => { keys[e.code] = false; });
+document.getElementById('reset').onclick = () => { camera.position.set(0, EYE, 0); yaw = 0; pitch = 0; };
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (!renderer.xr.isPresenting) {
+    camera.rotation.set(pitch, yaw, 0);
+    const f = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+    const s = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+    if (f || s) {
+      const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      camera.position.addScaledVector(fwd, f * dt * 0.8).addScaledVector(right, s * dt * 0.8);
+      const r = Math.hypot(camera.position.x, camera.position.z);
+      if (r > MOVE_LIMIT) { camera.position.x *= MOVE_LIMIT / r; camera.position.z *= MOVE_LIMIT / r; }
+    }
+  }
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
